@@ -240,7 +240,7 @@ def parse_args():
     parser.add_argument("--dataset", required=True, choices=dataset_names())
     parser.add_argument("--gpu", default="1")
     parser.add_argument("--mode", choices=("finetune", "scratch"), default="finetune")
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=7, help="largest full step that fits a 24GB 4090")
     parser.add_argument(
         "--max-epoch",
         type=int,

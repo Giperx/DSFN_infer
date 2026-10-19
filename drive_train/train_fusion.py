@@ -6,8 +6,9 @@ that checkpoint and trains every parameter. Scratch keeps the train-time
 two-branch RepConv.
 
 Warp is frozen. Each step warps one cam5+cam4 or cam5+cam3 pair with
-build_depth_output_model, then applies the original fusion losses. Batch size
-stays 1 because the warp canvas size changes per pair, matching Fusion/train.py.
+build_depth_output_model, then applies the original fusion losses. The canvas
+is the max over the batch. Defaults below are the largest batch that still
+completes a step on a 24GB 4090: nuscenes 2, lyft 3, widedrive3 1.
 """
 import os
 import sys
@@ -125,11 +126,12 @@ def train(args):
     )
     loader = DataLoader(
         data,
-        batch_size=1,
+        batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.workers,
-        drop_last=False,
+        drop_last=args.batch_size > 1,
         pin_memory=True,
+        generator=torch.Generator().manual_seed(args.seed),
     )
 
     warp_net = warp.Network().cuda().eval()
@@ -311,6 +313,15 @@ def train(args):
     print("################## end fusion training ##################")
 
 
+# Largest fusion batch that still completes a step on a 24GB 4090.
+# Other dataset names keep batch 1; their canvases were not measured.
+DEFAULT_BATCH = {
+    "nuscenes": 2,
+    "lyft": 3,
+    "widedrive3": 1,
+}
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="DSFN fusion training on driving pairs")
     parser.add_argument("--dataset", required=True, choices=dataset_names())
@@ -323,6 +334,12 @@ def parse_args():
         help="override the default: nuscenes 1, lyft (1224+1920) 3, widedrive3 3",
     )
     parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="default on a 24GB 4090: nuscenes 2, lyft 3, widedrive3 1",
+    )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--save-every", type=int, default=10)
     parser.add_argument("--pretrained", default="")
@@ -336,7 +353,10 @@ def parse_args():
     parser.add_argument("--max-canvas", type=int, default=1024, help="skip a warp whose long side exceeds this")
     parser.add_argument("--max-pixels", type=int, default=520000, help="skip a warp whose canvas area exceeds this")
     parser.add_argument("--bench-steps", type=int, default=0)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.batch_size is None:
+        args.batch_size = DEFAULT_BATCH.get(args.dataset, 1)
+    return args
 
 
 if __name__ == "__main__":
