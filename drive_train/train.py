@@ -19,7 +19,7 @@ sys.path.insert(0, str(HERE))
 from data import dataset_names  # noqa: E402
 from train_fusion import DEFAULT_BATCH  # noqa: E402
 
-WARP_BATCH = 7
+WARP_BATCH = 4
 
 
 def add_flag(command, name, value):
@@ -76,13 +76,13 @@ def parse_args():
         "--warp-batch-size",
         type=int,
         default=WARP_BATCH,
-        help="default 7, the largest warp step that fits a 24GB 4090",
+        help="official warp training batch",
     )
     parser.add_argument(
         "--fusion-batch-size",
         type=int,
         default=None,
-        help="default on a 24GB 4090: nuscenes 2, lyft 3, widedrive3 1",
+        help="official fusion training batch is 1",
     )
     parser.add_argument(
         "--max-epoch",

@@ -7,8 +7,7 @@ two-branch RepConv.
 
 Warp is frozen. Each step warps one cam5+cam4 or cam5+cam3 pair with
 build_depth_output_model, then applies the original fusion losses. The canvas
-is the max over the batch. Defaults below are the largest batch that still
-completes a step on a 24GB 4090: nuscenes 2, lyft 3, widedrive3 1.
+is the max over the batch. The official fusion batch size is 1.
 """
 import os
 import sys
@@ -313,11 +312,10 @@ def train(args):
     print("################## end fusion training ##################")
 
 
-# Largest fusion batch that still completes a step on a 24GB 4090.
-# Other dataset names keep batch 1; their canvases were not measured.
+# Official fusion training batch.
 DEFAULT_BATCH = {
-    "nuscenes": 2,
-    "lyft": 3,
+    "nuscenes": 1,
+    "lyft": 1,
     "widedrive3": 1,
 }
 
@@ -338,7 +336,7 @@ def parse_args():
         "--batch-size",
         type=int,
         default=None,
-        help="default on a 24GB 4090: nuscenes 2, lyft 3, widedrive3 1",
+        help="official fusion training batch is 1",
     )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--save-every", type=int, default=10)
