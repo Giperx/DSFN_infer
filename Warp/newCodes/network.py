@@ -493,8 +493,11 @@ def build_output_model(net, input1_tensor, input2_tensor):
 
     out_width = width_max - width_min
     out_height = height_max - height_min
-    #print(out_width)
-    #print(out_height)
+    canvas_h = int(out_height.item())
+    canvas_w = int(out_width.item())
+    # Refuse before allocating. An unbounded mesh otherwise kills the process.
+    if canvas_h < 2 or canvas_w < 2 or canvas_h * canvas_w > 5000 * 2000 or max(canvas_h, canvas_w) > 8000:
+        raise RuntimeError(f"canvas too large {canvas_w}x{canvas_h}")
 
     # get warped img1
     M_tensor = torch.tensor([[out_width / 2.0, 0., out_width / 2.0],
@@ -671,8 +674,11 @@ class Network(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-        ssl._create_default_https_context = ssl._create_unverified_context
-        resnet50_model = models.resnet.resnet50(pretrained=True)
+        # The released checkpoint already contains these ResNet-50 weights.
+        try:
+            resnet50_model = models.resnet.resnet50(weights=None)
+        except TypeError:
+            resnet50_model = models.resnet.resnet50(pretrained=False)
 
         if torch.cuda.is_available():
             resnet50_model = resnet50_model.cuda()
