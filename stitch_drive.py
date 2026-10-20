@@ -384,7 +384,11 @@ def _fallback_pair(reference, side, ref_extra_mask):
 
 @torch.no_grad()
 def stitch_pair(warp, fusion, warp_net, fusion_net, reference, side, max_height, ref_extra_mask=None):
-    reference = resize_height(reference, min(max_height, reference.shape[0]))
+    target = getattr(stitch_pair, "input_size", None)
+    if target:
+        reference = cv2.resize(reference, target, interpolation=cv2.INTER_AREA)
+    else:
+        reference = resize_height(reference, min(max_height, reference.shape[0]))
     if ref_extra_mask is None:
         extra = None
     else:
@@ -492,6 +496,7 @@ def stitch_frame(modules, dataset, scene, frame, save_root, max_height, chain_on
 
 def main():
     args = parse_args()
+    stitch_pair.input_size = (518, 434) if "1224" in args.dataset else (518, 294)
     scene = scene_dir(args.dataset, args.scene)
     modules = load_nets(args.gpu)
     for frame in args.frame:

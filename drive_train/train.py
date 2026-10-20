@@ -117,6 +117,13 @@ def parse_args():
 
 def main():
     args = parse_args()
+    names = ("lyft1920", "lyft1224") if args.dataset == "lyft" else (args.dataset,)
+    for name in names:
+        args.dataset = name
+        run_dataset(args)
+
+
+def run_dataset(args):
     if args.stage in ("both", "warp"):
         command = common_args(args, args.warp_batch_size)
         add_flag(command, "--pretrained", args.warp_pretrained or None)

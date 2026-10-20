@@ -123,12 +123,16 @@ def build_model(net, input1_tensor, input2_tensor, is_training = True):
     # network
     if is_training == True:
         aug_input1_tensor, aug_input2_tensor = data_aug(input1_tensor, input2_tensor)
+        aug_input1_tensor = F.interpolate(aug_input1_tensor, size=(512, 512), mode="bilinear", align_corners=False)
+        aug_input2_tensor = F.interpolate(aug_input2_tensor, size=(512, 512), mode="bilinear", align_corners=False)
         H_motion, mesh_motion = net(aug_input1_tensor, aug_input2_tensor)
     else:
         H_motion, mesh_motion = net(input1_tensor, input2_tensor)
 
     H_motion = H_motion.reshape(-1, 4, 2)
+    H_motion = torch.stack([H_motion[..., 0] * img_w / 512.0, H_motion[..., 1] * img_h / 512.0], 2)
     mesh_motion = mesh_motion.reshape(-1, grid_h+1, grid_w+1, 2)
+    mesh_motion = torch.stack([mesh_motion[..., 0] * img_w / 512.0, mesh_motion[..., 1] * img_h / 512.0], 3)
 
     # initialize the source points bs x 4 x 2
     src_p = torch.tensor([[0., 0.], [img_w, 0.], [0., img_h], [img_w, img_h]])
@@ -195,12 +199,16 @@ def build_train_model(net, input1_tensor, input2_tensor, depthInput1_tensor, dep
     # network
     if is_training == True:
         aug_input1_tensor, aug_input2_tensor = data_aug(input1_tensor, input2_tensor)
+        aug_input1_tensor = F.interpolate(aug_input1_tensor, size=(512, 512), mode="bilinear", align_corners=False)
+        aug_input2_tensor = F.interpolate(aug_input2_tensor, size=(512, 512), mode="bilinear", align_corners=False)
         H_motion, mesh_motion = net(aug_input1_tensor, aug_input2_tensor)
     else:
         H_motion, mesh_motion = net(input1_tensor, input2_tensor)
 
     H_motion = H_motion.reshape(-1, 4, 2)
+    H_motion = torch.stack([H_motion[..., 0] * img_w / 512.0, H_motion[..., 1] * img_h / 512.0], 2)
     mesh_motion = mesh_motion.reshape(-1, grid_h+1, grid_w+1, 2)
+    mesh_motion = torch.stack([mesh_motion[..., 0] * img_w / 512.0, mesh_motion[..., 1] * img_h / 512.0], 3)
     # save to use in depth input
 #     depth_H_motion = torch.stack([H_motion[...,0]*img_w/512, H_motion[...,1]*img_h/512], 2)
 #     depth_mesh_motion = torch.stack([mesh_motion[...,0]*img_w/512, mesh_motion[...,1]*img_h/512], 3)

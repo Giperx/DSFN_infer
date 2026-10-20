@@ -18,7 +18,8 @@ import torch
 from torch.utils.data import Dataset
 
 ROOT = Path(__file__).resolve().parents[1]
-WORK = Path("/home/test/LIVA/XZP/FeedForward/work2/0923_synGithub")
+_LEGACY_WORK = Path("/home/test/LIVA/XZP/FeedForward/work2/0923_synGithub")
+WORK = _LEGACY_WORK if (_LEGACY_WORK / "datasets").exists() else ROOT.parent
 CACHE_DIR = Path(__file__).resolve().parent / "cache"
 
 # split=train uses that list or every scene directory under root.
@@ -63,11 +64,17 @@ GROUPS = {
 DEFAULT_EPOCHS = {
     "nuscenes": 1,
     "lyft": 3,
+    "lyft1920": 3,
+    "lyft1224": 3,
     "widedrive3": 3,
 }
 
 PAIRS = ((5, 4), (5, 3))
-INPUT_SIZE = 512
+def input_hw(name):
+    return (518, 434) if "1224" in name else (518, 294)
+
+
+INPUT_SIZE = (518, 294)
 # Sparse lidar depth is stored in meters. Map valid pixels into the 0-255
 # grayscale range the original DepthAnything loss expects. 0 stays invalid.
 DEPTH_MAX_M = 80.0
@@ -220,17 +227,17 @@ def _depth_file(scene, frame, cam):
     raise FileNotFoundError(f"missing depth {folder}/{frame}_{cam}")
 
 
-def load_rgb(path):
+def load_rgb(path, size=INPUT_SIZE):
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None:
         raise FileNotFoundError(path)
-    image = cv2.resize(image, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_AREA)
+    image = cv2.resize(image, size, interpolation=cv2.INTER_AREA)
     image = image.astype(np.float32)
     image = (image / 127.5) - 1.0
     return np.transpose(image, (2, 0, 1))
 
 
-def load_depth(path):
+def load_depth(path, size=INPUT_SIZE):
     if path.suffix == ".npz":
         depth = np.load(path)["depth"].astype(np.float32)
         out = np.zeros(depth.shape, dtype=np.float32)
@@ -242,7 +249,7 @@ def load_depth(path):
         if depth is None:
             raise FileNotFoundError(path)
         depth = depth.astype(np.float32)
-    depth = cv2.resize(depth, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_NEAREST)
+    depth = cv2.resize(depth, size, interpolation=cv2.INTER_NEAREST)
     return depth[np.newaxis, :, :]
 
 
@@ -304,10 +311,11 @@ class DrivePairDataset(Dataset):
         frame = item["frame"]
         cam_a = item["cam_a"]
         cam_b = item["cam_b"]
-        image_a = load_rgb(_image_file(scene, frame, cam_a))
-        image_b = load_rgb(_image_file(scene, frame, cam_b))
-        depth_a = load_depth(_depth_file(scene, frame, cam_a))
-        depth_b = load_depth(_depth_file(scene, frame, cam_b))
+        size = input_hw(item["source"])
+        image_a = load_rgb(_image_file(scene, frame, cam_a), size)
+        image_b = load_rgb(_image_file(scene, frame, cam_b), size)
+        depth_a = load_depth(_depth_file(scene, frame, cam_a), size)
+        depth_b = load_depth(_depth_file(scene, frame, cam_b), size)
         image_a = torch.from_numpy(image_a)
         image_b = torch.from_numpy(image_b)
         depth_a = torch.from_numpy(depth_a)
