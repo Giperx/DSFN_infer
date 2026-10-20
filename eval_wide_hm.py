@@ -161,7 +161,10 @@ def score_method(method, resized_dir, gt_scene, frames, cam):
         if render.shape[:2] != gt.shape[:2]:
             render = cv2.resize(render, (gt.shape[1], gt.shape[0]), interpolation=cv2.INTER_AREA)
         mask = metrics_hm.load_mask(mask_path, gt.shape[:2])
-        full, regions = metrics_hm.score_pair(render, gt, mask)
+        direct = cam == 2
+        if direct:
+            mask = np.ones(gt.shape[:2], dtype=bool)
+        full, regions = metrics_hm.score_pair(render, gt, mask, match=not direct)
         if full is None:
             skipped.append(frame)
             continue

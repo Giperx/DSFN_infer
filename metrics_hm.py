@@ -31,13 +31,13 @@ def match_histograms(pred, target):
     return matched
 
 
-def frame_hm(render, gt, mask):
-    """Match rendered pixels to GT pixels, then score that pair. Images are [0, 1]."""
+def frame_hm(render, gt, mask, match=True):
+    """Score one pair. Histogram matching is skipped for dense WideDrive GT."""
     if mask.sum() == 0:
         return None
     pred = render[mask]
     target = gt[mask]
-    matched = match_histograms(pred, target)
+    matched = match_histograms(pred, target) if match else pred
     diff = matched - target
     mae = float(np.mean(np.abs(diff)))
     mse = float(np.mean(diff ** 2))
@@ -102,11 +102,11 @@ def load_mask(path, shape_hw):
     return mask > 127
 
 
-def score_pair(render, gt, mask):
-    full = frame_hm(render, gt, mask)
+def score_pair(render, gt, mask, match=True):
+    full = frame_hm(render, gt, mask, match=match)
     regions = {}
     for name, (x0, x1) in region_bounds(render.shape[1]).items():
-        regions[name] = frame_hm(render[:, x0:x1], gt[:, x0:x1], mask[:, x0:x1])
+        regions[name] = frame_hm(render[:, x0:x1], gt[:, x0:x1], mask[:, x0:x1], match=match)
     return full, regions
 
 
