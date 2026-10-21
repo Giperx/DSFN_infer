@@ -232,6 +232,7 @@ def load_rgb(path, size=INPUT_SIZE):
     if image is None:
         raise FileNotFoundError(path)
     image = cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+    image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_AREA)
     image = image.astype(np.float32)
     image = (image / 127.5) - 1.0
     return np.transpose(image, (2, 0, 1))
@@ -250,6 +251,7 @@ def load_depth(path, size=INPUT_SIZE):
             raise FileNotFoundError(path)
         depth = depth.astype(np.float32)
     depth = cv2.resize(depth, size, interpolation=cv2.INTER_NEAREST)
+    depth = cv2.resize(depth, (512, 512), interpolation=cv2.INTER_NEAREST)
     return depth[np.newaxis, :, :]
 
 
@@ -301,6 +303,9 @@ class DrivePairDataset(Dataset):
         self.roots = roots
         self.sources = sources
         self.dataset = dataset
+
+    def batch_sizes(self):
+        return [input_hw(item["source"]) for item in self.samples]
 
     def __len__(self):
         return len(self.samples)
