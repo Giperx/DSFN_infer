@@ -91,6 +91,35 @@ def fusion_forward(net, warp1, warp2, mask1, mask2):
     return learned_mask1, learned_mask2, stitched
 
 
+def stable_step(optimizer, parameters, max_growth=3.0):
+    params = [p for p in parameters if p.requires_grad]
+    for p in params:
+        if p.grad is not None and not torch.isfinite(p.grad).all():
+            optimizer.zero_grad(set_to_none=True)
+            return "nonfinite grad"
+    with torch.no_grad():
+        before = torch.zeros((), device=params[0].device)
+        saved = [p.detach().clone() for p in params]
+        for p in params:
+            before = before + p.detach().float().pow(2).sum()
+        before = torch.sqrt(before)
+    optimizer.step()
+    with torch.no_grad():
+        bad = any(not torch.isfinite(p).all() for p in params)
+        after = torch.zeros((), device=params[0].device)
+        if not bad:
+            for p in params:
+                after = after + p.detach().float().pow(2).sum()
+            after = torch.sqrt(after)
+            bad = float(before) > 0 and float(after) > max_growth * float(before)
+        if bad:
+            for p, old in zip(params, saved):
+                p.copy_(old)
+            optimizer.zero_grad(set_to_none=True)
+            return "weight x{:.1f}".format(float(after) / max(float(before), 1e-12))
+    return ""
+
+
 def train(args):
     warp = load_module(
         "dsfn_warp_network",
@@ -233,8 +262,10 @@ def train(args):
                     raise RuntimeError("non-finite fusion loss")
                 total.backward()
                 torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=3, norm_type=2)
-                optimizer.step()
-            except RuntimeError as exc:
+                reason = stable_step(optimizer, net.parameters())
+                if reason:
+                    raise RuntimeError(reason)
+            except (RuntimeError, MemoryError) as exc:
                 skipped += 1
                 optimizer.zero_grad(set_to_none=True)
                 torch.cuda.empty_cache()
@@ -255,6 +286,11 @@ def train(args):
             totals[4] += float(depth_loss.item())
             counted += 1
             glob_iter += 1
+            if args.max_steps and glob_iter >= args.max_steps:
+                path = os.path.join(ckpt_dir, f"step{glob_iter:07d}_model.pth")
+                torch.save({"model": net.state_dict(), "epoch": epoch + 1, "glob_iter": glob_iter}, path)
+                print(f"stopped after {glob_iter} steps, saved {path}", flush=True)
+                return
             step_sec = time.time() - step_start
             if args.bench_steps:
                 if counted >= 2:
@@ -351,6 +387,7 @@ def parse_args():
     parser.add_argument("--max-canvas", type=int, default=1024, help="skip a warp whose long side exceeds this")
     parser.add_argument("--max-pixels", type=int, default=520000, help="skip a warp whose canvas area exceeds this")
     parser.add_argument("--bench-steps", type=int, default=0)
+    parser.add_argument("--max-steps", type=int, default=0, help="stop after this many successful updates")
     args = parser.parse_args()
     if args.batch_size is None:
         args.batch_size = DEFAULT_BATCH.get(args.dataset, 1)

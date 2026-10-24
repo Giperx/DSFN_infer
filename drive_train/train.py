@@ -117,10 +117,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    names = ("lyft1920", "lyft1224") if args.dataset == "lyft" else (args.dataset,)
-    for name in names:
-        args.dataset = name
-        run_dataset(args)
+    run_dataset(args)
 
 
 def run_dataset(args):

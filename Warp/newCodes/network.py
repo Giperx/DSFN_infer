@@ -319,8 +319,11 @@ def build_depth_output_model(net, input1_tensor, input2_tensor, depthInput1_tens
 
     out_width = width_max - width_min
     out_height = height_max - height_min
-    #print(out_width)
-    #print(out_height)
+    if (not torch.isfinite(out_width)) or (not torch.isfinite(out_height)):
+        raise RuntimeError("non-finite canvas")
+    canvas_w, canvas_h = int(out_width.item()), int(out_height.item())
+    if canvas_w <= 0 or canvas_h <= 0 or max(canvas_w, canvas_h) > 8192:
+        raise RuntimeError(f"canvas {canvas_w}x{canvas_h}")
 
     # get warped img1
     M_tensor = torch.tensor([[out_width / 2.0, 0., out_width / 2.0],

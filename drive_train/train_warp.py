@@ -36,7 +36,7 @@ import time
 
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 
 sys.path.insert(0, os.path.dirname(__file__))
 from data import DrivePairDataset, dataset_names, default_epochs  # noqa: E402
@@ -54,6 +54,62 @@ def load_module(name, file_path, search_path):
 def latest_checkpoint(folder):
     paths = sorted(glob.glob(os.path.join(folder, "*.pth")))
     return paths[-1] if paths else None
+
+
+class SameSizeBatches(Sampler):
+    def __init__(self, sizes, batch_size, seed=0):
+        self.sizes = [tuple(size) for size in sizes]
+        self.batch_size = batch_size
+        self.seed = seed
+
+    def __iter__(self):
+        import random
+        groups = {}
+        for index, size in enumerate(self.sizes):
+            groups.setdefault(size, []).append(index)
+        rng = random.Random(self.seed)
+        batches = []
+        for indexes in groups.values():
+            rng.shuffle(indexes)
+            for start in range(0, len(indexes) - self.batch_size + 1, self.batch_size):
+                batches.append(indexes[start:start + self.batch_size])
+        rng.shuffle(batches)
+        return iter(batches)
+
+    def __len__(self):
+        groups = {}
+        for size in self.sizes:
+            groups[size] = groups.get(size, 0) + 1
+        return sum(count // self.batch_size for count in groups.values())
+
+
+def stable_step(optimizer, parameters, max_growth=3.0):
+    params = [p for p in parameters if p.requires_grad]
+    for p in params:
+        if p.grad is not None and not torch.isfinite(p.grad).all():
+            optimizer.zero_grad(set_to_none=True)
+            return "nonfinite grad"
+    with torch.no_grad():
+        before = torch.zeros((), device=params[0].device)
+        saved = [p.detach().clone() for p in params]
+        for p in params:
+            before = before + p.detach().float().pow(2).sum()
+        before = torch.sqrt(before)
+    optimizer.step()
+    with torch.no_grad():
+        bad = any(not torch.isfinite(p).all() for p in params)
+        after = torch.zeros((), device=params[0].device)
+        if not bad:
+            for p in params:
+                after = after + p.detach().float().pow(2).sum()
+            after = torch.sqrt(after)
+            bad = float(before) > 0 and float(after) > max_growth * float(before)
+        if bad:
+            for p, old in zip(params, saved):
+                p.copy_(old)
+            optimizer.zero_grad(set_to_none=True)
+            return "weight x{:.1f}".format(float(after) / max(float(before), 1e-12))
+    return ""
 
 
 def train(args):
@@ -84,14 +140,23 @@ def train(args):
         f"epochs={args.max_epoch} mode={args.mode} skipped_frames={data.skipped} "
         f"cache={data.cache_path}"
     )
-    loader = DataLoader(
-        data,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.workers,
-        drop_last=True,
-        pin_memory=True,
-    )
+    sizes = data.batch_sizes()
+    if len(set(sizes)) > 1:
+        loader = DataLoader(
+            data,
+            batch_sampler=SameSizeBatches(sizes, args.batch_size, args.seed),
+            num_workers=args.workers,
+            pin_memory=True,
+        )
+    else:
+        loader = DataLoader(
+            data,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.workers,
+            drop_last=True,
+            pin_memory=True,
+        )
     if len(loader) == 0:
         raise SystemExit("no full batch; lower --batch-size or raise --max-pairs")
 
@@ -179,7 +244,10 @@ def train(args):
                 continue
             total.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=3, norm_type=2)
-            optimizer.step()
+            reason = stable_step(optimizer, net.parameters())
+            if reason:
+                print(f"skip weight update at epoch {epoch} iter {i}: {reason}")
+                continue
 
             overlap_sigma += overlap_loss.item()
             nonoverlap_sigma += nonoverlap_loss.item()
