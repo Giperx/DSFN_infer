@@ -16,6 +16,8 @@ import argparse
 import gc
 import importlib.util
 import os
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -254,6 +256,71 @@ def prepare_metric_view(image, valid, cam5_mask, gt_size):
     return crop, resize_to_gt(crop, gt_size)
 
 
+class MethodMemoryError(RuntimeError):
+    """The stitch itself needs more memory than the GPU, with nobody else using it."""
+
+
+def is_oom(exc):
+    return "out of memory" in str(exc).lower()
+
+
+def other_process_holds_gpu(exc=None, minimum_mib=1024):
+    """True when a different process already occupies at least 1 GiB of this GPU."""
+    me = os.getpid()
+    if exc is not None:
+        for pid, amount, unit in re.findall(r"Process (\d+) has ([0-9.]+) ([MG]iB)", str(exc)):
+            if int(pid) == me:
+                continue
+            mib = float(amount) * (1024 if unit.startswith("G") else 1)
+            if mib >= minimum_mib:
+                return True
+    gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0].strip() or "0"
+    try:
+        text = subprocess.check_output(
+            [
+                "nvidia-smi",
+                f"--id={gpu}",
+                "--query-compute-apps=pid,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            timeout=5,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for line in text.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            pid, used = int(parts[0]), float(parts[1])
+        except ValueError:
+            continue
+        if pid != me and used >= minimum_mib:
+            return True
+    return False
+
+
+def oom_kind(exc):
+    if not is_oom(exc):
+        return None
+    return "contention" if other_process_holds_gpu(exc) else "method"
+
+
+def reference_on_white(reference, extra=None):
+    """Keep camera 5 and leave every unstitched pixel white."""
+    image = np.full(reference.shape, 255, np.uint8)
+    if extra is None:
+        image[:] = reference
+        valid = np.ones(reference.shape[:2], dtype=bool)
+    else:
+        extra = extra.astype(bool)
+        image[extra] = reference[extra]
+        valid = extra
+    return image, valid, valid.copy(), False
+
+
 def to_tensor(image):
     norm = image.astype(np.float32)
     norm = (norm / 127.5) - 1.0
@@ -309,7 +376,11 @@ def place_layer(canvas_h, canvas_w, image, mask, origin):
     sub_mask = mask[iy0:iy1, ix0:ix1].astype(np.uint8)
     if sub_mask.max() == 0:
         return color, weight
-    dist = cv2.distanceTransform(sub_mask, cv2.DIST_L2, 5).astype(np.float32) ** 2
+    dist = cv2.distanceTransform(sub_mask, cv2.DIST_L2, 5).astype(np.float32)
+    if sub_mask.min() == 1 or not np.isfinite(dist).all():
+        dist = np.ones(sub_mask.shape, np.float32)
+    else:
+        dist = np.square(np.minimum(dist, 64.0))
     color[y0:y1, x0:x1] = image[iy0:iy1, ix0:ix1].astype(np.float32) * dist[..., None]
     weight[y0:y1, x0:x1] = dist
     return color, weight
@@ -334,7 +405,9 @@ def compose_panoramas(base, mask_base, other, mask_other, cam5_base=None, cam5_o
     weight = weight_base + weight_other
     valid = weight > 0
     fused = np.full((canvas_h, canvas_w, 3), 255, np.float32)
-    fused[valid] = (color_base[valid] + color_other[valid]) / weight[valid, None]
+    blended = (color_base[valid] + color_other[valid]) / np.maximum(weight[valid, None], 1e-6)
+    finite = np.isfinite(blended).all(axis=1)
+    fused[valid] = np.where(finite[:, None], blended, 255)
     fused = np.clip(fused, 0, 255).astype(np.uint8)
     # One camera-5 rectangle, from the cam5+cam4 panorama. The other copy is
     # only used to estimate the shift; including it would widen the crop.
@@ -400,13 +473,15 @@ def stitch_pair(warp, fusion, warp_net, fusion_net, reference, side, max_height,
     try:
         warped = warp.build_output_model(warp_net, ref_t, side_t)
     except RuntimeError as exc:
-        if "canvas too large" in str(exc):
-            print(f"  {exc}", flush=True)
-            del ref_t, side_t
-            torch.cuda.empty_cache()
-            raise
-        print(f"  warp failed: {exc}")
-        return _fallback_pair(reference, side, extra)
+        del ref_t, side_t
+        torch.cuda.empty_cache()
+        kind = oom_kind(exc)
+        if kind == "contention":
+            print("  warp skipped because another process holds the GPU; keeping camera 5 on white", flush=True)
+            return reference_on_white(reference, extra)
+        if kind == "method" or "canvas too large" in str(exc):
+            raise MethodMemoryError(str(exc)) from exc
+        raise
     height = int(warped["final_warp1"].shape[2])
     width = int(warped["final_warp1"].shape[3])
     if height * width > 5000 * 2000 or max(height, width) > 8000:
@@ -417,7 +492,18 @@ def stitch_pair(warp, fusion, warp_net, fusion_net, reference, side, max_height,
         raise RuntimeError(f"canvas too large {width}x{height}")
     mask1 = warped["final_warp1_mask"][:, :1]
     mask2 = warped["final_warp2_mask"][:, :1]
-    fused = fusion.build_model(fusion_net, warped["final_warp1"], warped["final_warp2"], mask1, mask2)
+    try:
+        fused = fusion.build_model(fusion_net, warped["final_warp1"], warped["final_warp2"], mask1, mask2)
+    except RuntimeError as exc:
+        del warped, ref_t, side_t
+        torch.cuda.empty_cache()
+        kind = oom_kind(exc)
+        if kind == "contention":
+            print("  fusion skipped because another process holds the GPU; keeping camera 5 on white", flush=True)
+            return reference_on_white(reference, extra)
+        if kind == "method" or "Kernel size" in str(exc):
+            raise MethodMemoryError(str(exc)) from exc
+        raise
     image = fused["stitched_image"][0].detach().float().cpu().numpy().transpose(1, 2, 0)
     image = np.clip((image + 1.0) * 127.5, 0, 255).astype(np.uint8)
     valid = ((mask1[0, 0] + mask2[0, 0]) > 0.5).detach().cpu().numpy()
@@ -463,16 +549,21 @@ def stitch_frame(modules, dataset, scene, frame, save_root, max_height, chain_on
     cam5_s = resize_height(cam5, height)
     cam4_s = resize_height(cam4, height)
     cam3_s = resize_height(cam3, height)
-    print("  stitch cam5 + cam4")
-    step4, mask4, cam5_4, ok4 = stitch_pair(warp, fusion, warp_net, fusion_net, cam5_s, cam4_s, height)
-    if chain_only:
-        ok3, ok_align = False, False
-        final, valid, cam5 = step4, mask4, cam5_4
-    else:
-        print("  stitch cam5 + cam3")
-        _step3, _mask3, _cam5_3, ok3 = stitch_pair(warp, fusion, warp_net, fusion_net, cam5_s, cam3_s, height)
-        print("  align the two panoramas on cam5")
-        final, valid, cam5, ok_align = compose_panoramas(step4, mask4, _step3, _mask3, cam5_4, _cam5_3)
+    try:
+        print("  stitch cam5 + cam4")
+        step4, mask4, cam5_4, ok4 = stitch_pair(warp, fusion, warp_net, fusion_net, cam5_s, cam4_s, height)
+        if chain_only:
+            ok3, ok_align = False, False
+            final, valid, cam5 = step4, mask4, cam5_4
+        else:
+            print("  stitch cam5 + cam3")
+            _step3, _mask3, _cam5_3, ok3 = stitch_pair(warp, fusion, warp_net, fusion_net, cam5_s, cam3_s, height)
+            print("  align the two panoramas on cam5")
+            final, valid, cam5, ok_align = compose_panoramas(step4, mask4, _step3, _mask3, cam5_4, _cam5_3)
+    except MethodMemoryError as exc:
+        print(f"  fail frame {frame_token(frame)}: method exceeds GPU memory, nothing saved ({exc})", flush=True)
+        torch.cuda.empty_cache()
+        return None
     out_dir = Path(save_root) / dataset / scene.name / f"frame_{frame_token(frame)}"
     out_dir.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out_dir / "stitched.jpg"), final)
