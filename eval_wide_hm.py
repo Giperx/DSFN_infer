@@ -149,6 +149,7 @@ def score_method(method, resized_dir, gt_scene, frames, cam):
     region_rows = {name: [] for name in metrics_hm.REGION_NAMES}
     per_frame = []
     skipped = []
+    blank = 0
     for frame in frames:
         render_path = resized_dir / f"{frame}.png"
         gt_path = gt_scene / "rgb" / sparse_name(frame, cam)
@@ -160,6 +161,11 @@ def score_method(method, resized_dir, gt_scene, frames, cam):
         render = metrics_hm.load_rgb(render_path)
         if render.shape[:2] != gt.shape[:2]:
             render = cv2.resize(render, (gt.shape[1], gt.shape[0]), interpolation=cv2.INTER_AREA)
+        if metrics_hm.blank_side(render):
+            blank += 1
+            skipped.append(frame)
+            print(f"  reject {frame}: blank side", flush=True)
+            continue
         mask = metrics_hm.load_mask(mask_path, gt.shape[:2])
         direct = cam == 2
         if direct:
@@ -177,6 +183,7 @@ def score_method(method, resized_dir, gt_scene, frames, cam):
             for key, value in result.items():
                 row[f"{name.lower()}_{key}"] = value
         per_frame.append(row)
+    print(metrics_hm.success_line(len(full_rows), blank), flush=True)
     return full_rows, region_rows, per_frame, skipped
 
 
@@ -215,6 +222,7 @@ def write_reports(report_dir, method, meta, full_rows, region_rows, skipped):
         "HM-SSIM is the per-pixel luminance term. MAE and RMSE are on the 0-255 scale.",
         "Crop: one camera-5 width on each side of the camera-5 rectangle, then resize to sparse GT.",
         f"Skipped frames: {len(skipped)}",
+        "Crops with a side third at least 90% white are rejected and excluded from the scores.",
     ]
     full_lines = header + ["", *metrics_hm.format_stats(full_stats, "Full")]
     metrics_hm.write_lines(report_dir / f"HM_full_{method}.txt", full_lines)

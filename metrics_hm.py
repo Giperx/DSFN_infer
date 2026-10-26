@@ -12,6 +12,28 @@ from PIL import Image
 REGION_NAMES = ("Left", "Center", "Right")
 
 
+def blank_side(render, fraction=0.90, level=0.98):
+    """True when the left or right third of a crop is at least 90 percent white."""
+    image = render.astype(np.float64)
+    if image.max(initial=0) > 1.5:
+        image = image / 255.0
+    white = image.min(axis=-1) >= level if image.ndim == 3 else image >= level
+    width = white.shape[1]
+    third = width // 3
+    if third < 1:
+        return True
+    for start in (0, width - third):
+        if float(white[:, start:start + third].mean()) >= fraction:
+            return True
+    return False
+
+
+def success_line(scored, rejected):
+    judged = scored + rejected
+    rate = scored / judged if judged else 0.0
+    return f"Success: {scored}/{judged} ({rate:.1%}); blank-side rejected: {rejected}"
+
+
 def match_channel(source, template):
     """Per-channel CDF match, the same mapping as skimage.exposure.match_histograms."""
     _src_values, src_inverse, src_counts = np.unique(
