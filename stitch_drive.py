@@ -545,10 +545,12 @@ def stitch_frame(modules, dataset, scene, frame, save_root, max_height, chain_on
     cam3, p3 = load_cam(scene, frame, 3)
     print(f"{dataset} {scene.name} frame {frame_token(frame)}")
     print(f"  inputs {p5.name} {p4.name} {p3.name} {cam5.shape[1]}x{cam5.shape[0]}")
-    height = min(max_height, cam5.shape[0])
-    cam5_s = resize_height(cam5, height)
-    cam4_s = resize_height(cam4, height)
-    cam3_s = resize_height(cam3, height)
+    target = getattr(stitch_pair, "input_size", None) or (cam5.shape[1], min(max_height, cam5.shape[0]))
+    cam5_s, cam4_s, cam3_s = [
+        image if (image.shape[1], image.shape[0]) == target else cv2.resize(image, target, interpolation=cv2.INTER_AREA)
+        for image in (cam5, cam4, cam3)
+    ]
+    height = target[1]
     try:
         print("  stitch cam5 + cam4")
         step4, mask4, cam5_4, ok4 = stitch_pair(warp, fusion, warp_net, fusion_net, cam5_s, cam4_s, height)
